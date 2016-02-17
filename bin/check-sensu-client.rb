@@ -84,6 +84,12 @@ class EC2Filter < Sensu::Plugin::Check::CLI
          description: 'Filter to use to find ec2 instances',
          default: '{}'
 
+  option :exclude_tags,
+         short: '-e {<tag-key>:[VAL1, VAL2]} {<tag-key>:[VAL1, VAL2] }',
+         long: '--exclude_tags {<tag-key>:[VAL1, VAL2] } {<tag-key>:[VAL1, VAL2] }',
+         description: 'Tag Values to exclude by. Values treated as regex. Any matching value will result in exclusion.',
+         default: '{}'
+
 
   def aws_config
     hash = {}
@@ -93,8 +99,10 @@ class EC2Filter < Sensu::Plugin::Check::CLI
   end
 
   def run
-
-
+      #Converting the string into a hash.
+      filter_list = config[:exclude_tags].split(/}\s?{/).map{|x| x.gsub(/[{}]/,'')}.map {|y| h1,h2 = y.split(':'); { h1 => h2}}.reduce(:merge)
+      filter_list.delete(nil)
+      filter_list.each { |x,y| filter_list[x] = y.strip.gsub(/[\[\]]/,'')}
       client = Aws::EC2::Client.new aws_config
 
       parsed_filter = parse(config[:filter])
@@ -113,7 +121,8 @@ class EC2Filter < Sensu::Plugin::Check::CLI
         r.instances.each do |i|
           aws_instances << {
             id:i[:instance_id],
-            up_time: (currentTime - i[:launch_time])/60
+            up_time: (currentTime - i[:launch_time])/60,
+            tags: i.tags
           }
         end
       end
@@ -121,6 +130,13 @@ class EC2Filter < Sensu::Plugin::Check::CLI
       sensu_clients = client_check
 
       missing = Set.new
+
+      aws_instances.delete_if { |instance| instance[:tags].any? { |key|
+        filter_list.keys.include?(key.key) && filter_list[key.key].split(',').any? { |v|
+          key.value.match(/#{v.strip}/)
+          }
+        }
+      }
 
       aws_instances.each do |i|
         if sensu_clients.include?(i[:id]) == false
